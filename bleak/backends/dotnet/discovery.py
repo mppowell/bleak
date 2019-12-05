@@ -124,6 +124,81 @@ async def discover(
 
     return found
 
+async def discover_single(
+    target: str = None, callback: callable = None, loop: AbstractEventLoop = None
+) -> BLEDevice:
+    """ Perform a Bluetooth LE Scan, and update the advertisement information for a specific target
+
+    Args:
+        target (str): Target device Bluetooth MAC address
+        queue (AsyncIO Queue): The queue to write updates to
+        loop (Event Loop): The event loop to use
+    
+    Returns:
+        Nothing
+    """
+    loop = loop if loop else asyncio.get_event_loop()
+
+    watcher = BluetoothLEAdvertisementWatcher()
+
+    update_count = 0
+
+    def _format_bdaddr(a):
+        return ":".join("{:02X}".format(x) for x in a.to_bytes(6, byteorder="big"))
+
+    def _format_event_args(e):
+        try:
+            return "{0}: {1}".format(
+                _format_bdaddr(e.BluetoothAddress),
+                e.Advertisement.LocalName or "Unknown",
+            )
+        except Exception:
+            return e.BluetoothAddress
+
+    def AdvertisementWatcher_Received(sender, e):
+        if sender == watcher:
+            if _format_bdaddr(e.BluetoothAddress) == target:
+                device = format_advertisement(e)
+                callback(device)
+
+    def AdvertisementWatcher_Stopped(sender, e):
+        if sender == watcher:
+            logger.debug(
+                "{0} updates received. Watcher status: {1}.".format(
+                    update_count, watcher.Status
+                )
+            )
+
+    watcher.Received += AdvertisementWatcher_Received
+    watcher.Stopped += AdvertisementWatcher_Stopped
+
+    watcher.ScanningMode = BluetoothLEScanningMode.Active
+
+    # Watcher works outside of the Python process.
+    watcher.Start()
+    #await asyncio.sleep(timeout, loop=loop)
+    #watcher.Stop()
+
+    def format_advertisement(d):
+        bdaddr = _format_bdaddr(d.BluetoothAddress)
+        uuids = []
+        for u in d.Advertisement.ServiceUuids:
+            uuids.append(u.ToString())
+        data = {}
+        for m in d.Advertisement.ManufacturerData:
+            md = IBuffer(m.Data)
+            b = Array.CreateInstance(Byte, md.Length)
+            reader = DataReader.FromBuffer(md)
+            reader.ReadBytes(b)
+            data[m.CompanyId] = bytes(b)
+        local_name = d.Advertisement.LocalName
+        return BLEDevice(
+            bdaddr,
+            local_name,
+            d,
+            uuids=uuids,
+            manufacturer_data=data,
+            )
 
 async def discover_by_enumeration(
     timeout: float = 5.0, loop: AbstractEventLoop = None, **kwargs
